@@ -134,6 +134,48 @@ WHEN NOT MATCHED THEN
   VALUES (s.country, s.city, s.state, s.postalcode, s.region);
         """
     )
+    RUN_INSERT_FACT_ORDER = SQLExecuteQueryOperator(
+        task_id="RUN_INSERT_FACT_ORDER",
+        conn_id="snowflake_default",  # ✅ VALID for airflow.providers.snowflake
+        sql="""
+        MERGE INTO transformed.public.fact_orders f
+USING (
+    SELECT
+        o.orderid,
+        o.orderdate,
+        o.shipdate,
+        o.shipmode,
+        o.sales,
+        o.quantity,
+        o.discount,
+        o.profit,
+        c.customerid,
+        p.productid,
+        g.geography_id AS geoid
+    FROM transformed.public.orders o
+    JOIN  transformed.public.customers c
+      ON o.customerid = c.customerid
+    JOIN  transformed.public.products p
+      ON o.productid = p.productid
+    JOIN  transformed.public.geography g
+      ON o.country    = g.country
+     AND o.city       = g.city
+     AND o.state      = g.state
+     AND o.postalcode = g.postalcode
+     AND o.region     = g.region
+) s
+ON f.orderid = s.orderid
+WHEN NOT MATCHED THEN
+  INSERT (
+    orderid, orderdate, shipdate, shipmode, sales,
+    quantity, discount, profit, customerid, productid, geoid
+  )
+  VALUES (
+    s.orderid, s.orderdate, s.shipdate, s.shipmode, s.sales,
+    s.quantity, s.discount, s.profit, s.customerid, s.productid, s.geoid
+  );
+        """
+    )
 
 
     # DAG dependencies
@@ -141,4 +183,4 @@ WHEN NOT MATCHED THEN
     end_task = EmptyOperator(task_id='end', dag=dag)
 
 
-    start_task >> RUN_INSERT_ORDERS >> RUN_INSERT_CUSTOMERS >> RUN_INSERT_PRODUCTS >> RUN_INSERT_GEOGRAPHY >> end_task
+    start_task >> RUN_INSERT_ORDERS >> RUN_INSERT_CUSTOMERS >> RUN_INSERT_PRODUCTS >> RUN_INSERT_GEOGRAPHY >> RUN_INSERT_FACT_ORDER >>  end_task
