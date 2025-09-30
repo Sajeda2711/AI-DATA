@@ -1,0 +1,348 @@
+-- ============================================================
+--  1. RAW LAYER (STAGING)
+-- ============================================================
+
+CREATE OR REPLACE DATABASE STG;
+CREATE OR REPLACE SCHEMA STG.RAW_DATA;
+
+CREATE OR REPLACE TABLE STG.RAW_DATA.ORDERS (
+    ROWID NUMBER(38,0),
+    ORDERID VARCHAR(16777216),
+    ORDERDATE VARCHAR(16777216),
+    SHIPDATE VARCHAR(16777216),
+    SHIPMODE VARCHAR(16777216),
+    CUSTOMERID VARCHAR(16777216),
+    CUSTOMERNAME VARCHAR(16777216),
+    SEGMENT VARCHAR(16777216),
+    COUNTRY VARCHAR(16777216),
+    CITY VARCHAR(16777216),
+    STATE VARCHAR(16777216),
+    POSTALCODE VARCHAR(16777216),
+    REGION VARCHAR(16777216),
+    PRODUCTID VARCHAR(16777216),
+    CATEGORY VARCHAR(16777216),
+    SUBCATEGORY VARCHAR(16777216),
+    PRODUCTNAME VARCHAR(16777216),
+    SALES NUMBER(18,4),
+    QUANTITY NUMBER(38,0),
+    DISCOUNT NUMBER(9,4),
+    PROFIT NUMBER(18,4),
+    TBL_DT NUMBER(38,0),
+    INGESTED_AT TIMESTAMP_NTZ(9),
+    FILE_NAME VARCHAR(16777216),
+    OFFSET_ID VARCHAR(16777216)
+);
+
+-- ============================================================
+--  2. TRANSFORMED LAYER
+-- ============================================================
+
+CREATE OR REPLACE DATABASE TRANSFORMED;
+============================================================
+CREATE OR REPLACE SCHEMA TRANSFORMED.PUBLIC;
+============================================================
+
+-- Product to Subcategory Mapping
+CREATE OR REPLACE TABLE TRANSFORMED.PUBLIC.PRODUCT_SUBCATEGORY_MAP (
+    PRODUCTNAME VARCHAR(500) NOT NULL,
+    SUBCATEGORY VARCHAR(255),
+    PRIMARY KEY (PRODUCTNAME)
+);
+============================================================
+
+-----one time insert 
+-- Cleaned Orders Table
+CREATE OR REPLACE TABLE TRANSFORMED.PUBLIC.ORDERS AS
+WITH latest_files AS (
+    SELECT 
+        TO_CHAR(TRY_TO_DATE(OrderDate, 'DD-MM-YYYY'), 'YYYYMM') AS business_month,
+        MAX(tbl_dt) AS max_tbl_dt
+    FROM STG.raw_data.ORDERS
+    GROUP BY 1
+)
+SELECT
+    o.RowID,
+    o.OrderID,
+
+    --  Clean dates
+    TRY_TO_DATE(o.OrderDate, 'DD-MM-YYYY') AS OrderDate,
+    TRY_TO_DATE(o.ShipDate, 'DD-MM-YYYY')  AS ShipDate,
+
+    o.ShipMode,
+    o.CustomerID,
+    o.Segment,
+    o.Country,
+    o.ProductID,
+    o.Sales    AS Sales,
+    o.Quantity AS Quantity,
+    o.Discount AS Discount,
+    o.Profit   AS Profit,
+    o.PostalCode AS PostalCode,
+
+    --  Clean strings
+    REGEXP_REPLACE(o.CustomerName, '[^a-zA-Z0-9\\s\\.,-]', '') AS CustomerName,
+    REGEXP_REPLACE(o.City, '[^a-zA-Z0-9\\s\\.,-]', '')         AS City,
+    REGEXP_REPLACE(o.State, '[^a-zA-Z0-9\\s\\.,-]', '')        AS State,
+    REGEXP_REPLACE(o.Region, '[^a-zA-Z0-9\\s\\.,-]', '')       AS Region,
+    REGEXP_REPLACE(o.Category, '[^a-zA-Z0-9\\s\\.,-]', '')     AS Category,
+    COALESCE(m.SUBCATEGORY, 'Unmapped')                        AS SubCategory,
+    REGEXP_REPLACE(o.ProductName, '[^a-zA-Z0-9\\s\\.,-]', '')  AS ProductName,
+
+    --  Metadata
+    TRY_TO_DATE(OrderDate, 'DD-MM-YYYY') AS actual_date,
+    o.TBL_DT,
+    o.ingested_at,
+    o.FILE_NAME,
+    o.offset_id
+
+FROM STG.raw_data.ORDERS o
+JOIN latest_files lf 
+  ON TO_CHAR(TRY_TO_DATE(o.OrderDate, 'DD-MM-YYYY'), 'YYYYMM') = lf.business_month
+ AND o.tbl_dt = lf.max_tbl_dt
+LEFT JOIN transformed.public.PRODUCT_SUBCATEGORY_MAP m
+       ON REGEXP_REPLACE(o.ProductName, '[^a-zA-Z0-9\\s\\.,-]', '') = m.PRODUCTNAME
+WHERE o.Profit > 0
+  AND TRY_TO_DATE(o.OrderDate, 'DD-MM-YYYY') IS NOT NULL;
+
+============================================================
+create or replace TABLE transformed.public.customers ( 
+ CUSTOMERID VARCHAR(16777216),
+	CUSTOMERNAME VARCHAR(16777216),
+	SEGMENT VARCHAR(16777216) )  ;
+============================================================
+ MERGE INTO transformed.public.customers c
+USING (
+    SELECT DISTINCT customerid, customername, segment
+    FROM transformed.public.orders
+) s
+ON c.customerid = s.customerid
+WHEN NOT MATCHED THEN
+  INSERT (customerid, customername, segment)
+  VALUES (s.customerid, s.customername, s.segment);
+============================================================
+create or replace TABLEtransformed.public.Products ( 
+PRODUCTID VARCHAR(16777216),
+	CATEGORY VARCHAR(16777216),
+	SUBCATEGORY VARCHAR(16777216),
+	PRODUCTNAME VARCHAR(16777216))  ;    
+
+============================================================
+ MERGE INTO transformed.public.products p
+USING (
+    SELECT DISTINCT productid, category, subcategory, productname
+    FROM transformed.public.orders
+) s
+ON p.productid = s.productid
+WHEN NOT MATCHED THEN
+  INSERT (productid, category, subcategory, productname)
+  VALUES (s.productid, s.category, s.subcategory, s.productname);
+============================================================
+
+CREATE OR REPLACE TABLE transformed.public.GEOGRAPHY (
+    geography_id  INT DEFAULT geography_seq.NEXTVAL,
+    country       VARCHAR,
+    city          VARCHAR,
+    state         VARCHAR,
+    postalcode    VARCHAR,
+    region        VARCHAR,
+    PRIMARY KEY (geography_id)
+);
+============================================================
+MERGE INTO transformed.public.geography g
+USING (
+    SELECT DISTINCT country, city, state, postalcode, region
+    FROM transformed.public.orders
+) s
+ON g.country    = s.country
+   AND g.city   = s.city
+   AND g.state  = s.state
+   AND g.postalcode = s.postalcode
+   AND g.region = s.region
+WHEN NOT MATCHED THEN
+  INSERT (country, city, state, postalcode, region)
+  VALUES (s.country, s.city, s.state, s.postalcode, s.region);
+============================================================
+CREATE TABLE transformed.public.fact_orders (
+  ORDERID VARCHAR PRIMARY KEY,
+  ORDERDATE DATE,
+  SHIPDATE DATE,
+  SHIPMODE VARCHAR,
+  SALES NUMBER(18,4),
+  QUANTITY NUMBER(38,0),
+  DISCOUNT NUMBER(9,4),
+  PROFIT NUMBER(18,4),
+  CUSTOMERID VARCHAR,
+  PRODUCTID VARCHAR,
+  GEOID NUMBER
+);    
+MERGE INTO transformed.public.fact_orders f
+USING (
+    SELECT
+        o.orderid,
+        o.orderdate,
+        o.shipdate,
+        o.shipmode,
+        o.sales,
+        o.quantity,
+        o.discount,
+        o.profit,
+        c.customerid,
+        p.productid,
+        g.geography_id AS geoid
+    FROM transformed.public.orders o
+    JOIN  transformed.public.customers c
+      ON o.customerid = c.customerid
+    JOIN  transformed.public.products p
+      ON o.productid = p.productid
+    JOIN  transformed.public.geography g
+      ON o.country    = g.country
+     AND o.city       = g.city
+     AND o.state      = g.state
+     AND o.postalcode = g.postalcode
+     AND o.region     = g.region
+) s
+ON f.orderid = s.orderid
+WHEN NOT MATCHED THEN
+  INSERT (
+    orderid, orderdate, shipdate, shipmode, sales,
+    quantity, discount, profit, customerid, productid, geoid
+  )
+  VALUES (
+    s.orderid, s.orderdate, s.shipdate, s.shipmode, s.sales,
+    s.quantity, s.discount, s.profit, s.customerid, s.productid, s.geoid
+  ); 
+
+
+-- ============================================================
+--  3. ANALYTICS LAYER (DATAMARTS)
+-- ============================================================
+
+CREATE OR REPLACE DATABASE ANALYTICS;
+-- ============================================================
+-- Bestsellers Price Dynamics
+CREATE OR REPLACE TABLE ANALYTICS.PUBLIC.DM_BESTSELLERS_PRICE_DYNAMICS AS
+WITH product_monthly_sales AS (
+    SELECT
+        f.productid,
+        p.productname,
+        DATE_TRUNC('MONTH', f.orderdate) AS month,
+        SUM(f.sales) AS total_sales,
+        SUM(f.quantity) AS total_quantity,
+        SUM(f.sales) / NULLIF(SUM(f.quantity), 0) AS avg_price
+    FROM transformed.public.fact_orders f
+    JOIN transformed.public.products p
+      ON f.productid = p.productid
+    GROUP BY f.productid, p.productname, month
+),
+best_selling_products AS (
+    SELECT productid
+    FROM product_monthly_sales
+    GROUP BY productid
+    ORDER BY SUM(total_sales) DESC
+    LIMIT 10
+)
+SELECT
+    pms.month,
+    pms.productid,
+    pms.productname,
+    pms.avg_price
+FROM product_monthly_sales pms
+JOIN best_selling_products bsp 
+  ON pms.productid = bsp.productid
+ORDER BY pms.month, pms.productid;
+
+-- State Sales Dynamics
+CREATE OR REPLACE TABLE ANALYTICS.PUBLIC.DM_STATE_SALES_DYNAMICS AS
+SELECT
+    TO_CHAR(DATE_TRUNC('MONTH', f.orderdate), 'YYYY-MM') AS month,
+    g.state,
+    SUM(f.sales) AS total_sales
+FROM transformed.public.fact_orders f
+JOIN transformed.public.geography g 
+  ON f.geoid = g.geography_id
+GROUP BY month, g.state
+ORDER BY month, g.state;
+
+
+-- Segment Top Customers
+CREATE OR REPLACE TABLE ANALYTICS.PUBLIC.DM_SEGMENT_TOP_CUSTOMERS AS
+WITH customer_sales AS (
+    SELECT
+        c.segment,
+        c.customerid,
+        c.customername,
+        SUM(f.sales) AS total_sales
+    FROM transformed.public.fact_orders f
+    JOIN transformed.public.customers c
+      ON f.customerid = c.customerid
+    GROUP BY c.segment, c.customerid, c.customername
+),
+ranked_customers AS (
+    SELECT
+        cs.*,
+        RANK() OVER (PARTITION BY cs.segment ORDER BY cs.total_sales DESC) AS rank_in_segment
+    FROM customer_sales cs
+)
+SELECT *
+FROM ranked_customers
+WHERE rank_in_segment <= 10
+ORDER BY segment, rank_in_segment;
+
+
+-- State Product Sales Ranks
+CREATE OR REPLACE TABLE ANALYTICS.PUBLIC.DM_STATE_PRODUCT_SALES_RANKS AS
+WITH product_state_sales AS (
+    SELECT
+        DATE_TRUNC('MONTH', f.orderdate) AS month,
+        g.state,
+        f.productid,
+        p.productname,
+        SUM(f.sales) AS total_sales
+    FROM transformed.public.fact_orders f
+    JOIN transformed.public.products p
+      ON f.productid = p.productid
+    JOIN transformed.public.geography g
+      ON f.geoid = g.geography_id
+    GROUP BY month, g.state, f.productid, p.productname
+),
+ranked_products AS (
+    SELECT 
+        pss.*,
+        RANK() OVER (PARTITION BY pss.month, pss.state ORDER BY pss.total_sales DESC) AS top_rank,
+        RANK() OVER (PARTITION BY pss.month, pss.state ORDER BY pss.total_sales ASC)  AS bottom_rank
+    FROM product_state_sales pss
+)
+SELECT *
+FROM ranked_products
+WHERE top_rank <= 5 OR bottom_rank <= 5
+ORDER BY month, state, total_sales DESC;
+
+
+-- State Delivery Ranks
+CREATE OR REPLACE TABLE ANALYTICS.PUBLIC.DM_STATE_DELIVERY_RANKS AS
+WITH delivery_times AS (
+    SELECT
+        DATE_TRUNC('MONTH', f.orderdate) AS month,
+        g.state,
+        f.productid,
+        p.productname,
+        AVG(DATEDIFF('DAY', f.orderdate, f.shipdate)) AS avg_delivery_days
+    FROM transformed.public.fact_orders f
+    JOIN transformed.public.products p
+      ON f.productid = p.productid
+    JOIN transformed.public.geography g
+      ON f.geoid = g.geography_id
+    GROUP BY month, g.state, f.productid, p.productname
+),
+ranked_delivery AS (
+    SELECT 
+        dt.*,
+        RANK() OVER (PARTITION BY dt.month, dt.state ORDER BY dt.avg_delivery_days ASC)  AS fastest_rank,
+        RANK() OVER (PARTITION BY dt.month, dt.state ORDER BY dt.avg_delivery_days DESC) AS slowest_rank
+    FROM delivery_times dt
+)
+SELECT *
+FROM ranked_delivery
+WHERE fastest_rank <= 5 OR slowest_rank <= 5
+ORDER BY month, state, avg_delivery_days;
+
