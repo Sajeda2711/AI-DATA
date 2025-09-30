@@ -24,7 +24,7 @@ with DAG(
 
     RUN_INSERT_ORDERS = SQLExecuteQueryOperator(
         task_id="RUN_INSERT_ORDERS",
-        conn_id="snowflake_default",  # ✅ VALID for airflow.providers.snowflake
+        conn_id="snowflake_default",  
         sql="""
         INSERT INTO Transformed.public.ORDERS
 WITH latest_files AS (
@@ -87,7 +87,7 @@ WHERE o.Profit > 0
 
     RUN_INSERT_CUSTOMERS = SQLExecuteQueryOperator(
         task_id="RUN_INSERT_CUSTOMERS",
-        conn_id="snowflake_default",  # ✅ VALID for airflow.providers.snowflake
+        conn_id="snowflake_default",  
         sql="""
         MERGE INTO transformed.public.customers c
 USING (
@@ -117,7 +117,7 @@ WHEN NOT MATCHED THEN
     )
     RUN_INSERT_GEOGRAPHY = SQLExecuteQueryOperator(
         task_id="RUN_INSERT_GEOGRAPHY",
-        conn_id="snowflake_default",  # ✅ VALID for airflow.providers.snowflake
+        conn_id="snowflake_default", 
         sql="""
         MERGE INTO transformed.public.geography g
 USING (
@@ -136,7 +136,7 @@ WHEN NOT MATCHED THEN
     )
     RUN_INSERT_FACT_ORDER = SQLExecuteQueryOperator(
         task_id="RUN_INSERT_FACT_ORDER",
-        conn_id="snowflake_default",  # ✅ VALID for airflow.providers.snowflake
+        conn_id="snowflake_default", 
         sql="""
         MERGE INTO transformed.public.fact_orders f
 USING (
@@ -184,3 +184,4 @@ WHEN NOT MATCHED THEN
 
 
     start_task >> RUN_INSERT_ORDERS >> RUN_INSERT_CUSTOMERS >> RUN_INSERT_PRODUCTS >> RUN_INSERT_GEOGRAPHY >> RUN_INSERT_FACT_ORDER >>  end_task
+
